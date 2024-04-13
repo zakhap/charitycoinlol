@@ -22,13 +22,17 @@ const deployYourContract: DeployFunction = async function (hre: HardhatRuntimeEn
   const { deployer } = await hre.getNamedAccounts();
   const { deploy } = hre.deployments;
 
+  const weth = `0x4200000000000000000000000000000000000006`; // base + base sepolia
+  // const uniswap = `0x33128a8fC17869897dcE68Ed026d694621f6FDfD`; // base
+  const uniswap = `0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24`; // base sepolia
+
   const CharityCoinDeployer = await deploy("CharityCoinDeployer", {
     from: deployer,
-    args: [deployer],
+    args: [deployer, uniswap, weth],
     log: true,
     autoMine: true,
   });
-  console.log(CharityCoinDeployer);
+  console.log("CharitycoinFactory Address:", CharityCoinDeployer.address);
 };
 
 export default deployYourContract;

@@ -1,14 +1,15 @@
 //SPDX-License-Identifier: MIT
 pragma solidity >=0.8.0 <0.9.0;
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 
-// Useful for debugging. Remove when deploying to a live network.
+
 import "hardhat/console.sol";
  
 contract CharityCoin is ERC20, ReentrancyGuard {
@@ -42,6 +43,27 @@ interface IUniV3 {
 		address tokenB,
 		uint24 fee
 	) external returns (address pool);
+
+	struct MintParams {
+        address token0;
+        address token1;
+        uint24 fee;
+        int24 tickLower;
+        int24 tickUpper;
+        uint256 amount0Desired;
+        uint256 amount1Desired;
+        uint256 amount0Min;
+        uint256 amount1Min;
+        address recipient;
+        uint256 deadline;
+	}
+
+	    function mint(MintParams calldata params) external payable returns (
+            uint256 tokenId,
+            uint128 liquidity,
+            uint256 amount0,
+            uint256 amount1
+        );
 }
 
 contract LiquidityProvider is ReentrancyGuard, Ownable {
@@ -53,11 +75,14 @@ contract LiquidityProvider is ReentrancyGuard, Ownable {
 	address public uniswapV3;
 	address public weth;
 
+	event CharitableDonation(address indexed donor, uint256 value);
+	event NewPool(address indexed poolAddress, address indexed tokenA, address indexed tokenB);
+
 	constructor(uint256 _charityFee, address _charityAddress, address _uniswapV3, address _weth) {
 			charityFee = _charityFee;
 			charityAddress = _charityAddress;
 			isActive = false;
-			uniswapv3 = _uniswapV3;
+			uniswapV3 = _uniswapV3;
 			weth = _weth;
 	}
 
@@ -96,11 +121,13 @@ contract LiquidityProvider is ReentrancyGuard, Ownable {
 	function buy() external payable nonReentrant {
 		require(isActive == true);
 		uint256 supply = token.balanceOf(address(this));
-		uint256 fee = msg.value * charityFee / 100;
-		uint256 amount = calculatePrice(supply, msg.value - fee, token.decimals(), 1 ether);
+		uint256 charityAmount = msg.value * charityFee / 100;
+		uint256 amount = calculatePrice(supply, msg.value - charityAmount, token.decimals(), 1 ether);
 		// Transfer the tokens
 		token.transfer(msg.sender, amount);
-		payable(charityAddress).transfer(fee);
+		payable(charityAddress).transfer(charityAmount);
+		emit CharitableDonation(msg.sender, charityAmount);
+
 		// on threshold hook to create unipool (V2/V3???)
 		if (supply < threshold) {
 			// call hook
@@ -108,8 +135,36 @@ contract LiquidityProvider is ReentrancyGuard, Ownable {
 			uint256 contractBalance = address(this).balance;
 			IWETH(weth).deposit{value: contractBalance}();
 			// 2. create pool
+			// Create a pair for WETH and the token
+			address pool = IUniswapV3Factory(address(uniswapV3)).createPool(address(token), weth, 10000); // 1%
+			emit NewPool(pool, address(token), weth);
+				// 3. Fund pool
+			uint256 wethAmount = IERC20(weth).balanceOf(address(this));
+			uint256 tokenAmount = token.balanceOf(address(this));
 
-			// 3. Fund pool
+			// Approve the Uniswap router to spend WETH and the token
+			IERC20(weth).approve(address(uniswapV3), wethAmount);
+			token.approve(address(uniswapV3), tokenAmount);
+
+			// Define the parameters for mintPosition
+			IUniV3.MintParams memory params = 
+				IUniV3.MintParams(
+					address(token),
+					address(weth),
+					10000,
+					-887200,
+					88720,
+					tokenAmount,
+					wethAmount,
+					0,
+					0,
+					charityAddress,
+					block.timestamp + 15 minutes
+				);
+
+			// // Mint a new position in the pool
+			IUniV3(uniswapV3).mint{value: wethAmount}(params);
+
 		}
 	}
 
@@ -125,6 +180,8 @@ contract LiquidityProvider is ReentrancyGuard, Ownable {
 
 			// Send the Ether
 			payable(charityAddress).transfer(charityAmount);
+			emit CharitableDonation(msg.sender, charityAmount);
+
 			payable(msg.sender).transfer(totalReturn);
     }
 }
@@ -138,7 +195,7 @@ contract CharityCoinDeployer is ReentrancyGuard {
 
 		event NewTokenCreated(address indexed tokenAddress, string name, string symbol, uint256 totalSupply);
 
-    constructor(address _charityAddress, _uniswapV3, _weth) {
+    constructor(address _charityAddress, address _uniswapV3,address  _weth) {
 			charityAddress = _charityAddress;
 			uniswapV3 = _uniswapV3;
 			weth = _weth;
